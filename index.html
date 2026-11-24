@@ -120,6 +120,7 @@
   .fit-badge.muted { color: var(--muted); background: var(--surface-2); }
   details.sl summary { cursor: pointer; color: var(--muted); font-size: .85rem; padding: .6rem 0; }
   details.sl .line-item { font-size: .82rem; padding: .45rem 0; }
+  .build { margin-top: 1.5rem; text-align: center; font-size: .75rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -288,6 +289,7 @@
       </div>
     </aside>
   </div>
+  <footer class="build" id="buildLabel">TrueCost · Build 2026-11-17 · slicer-reported numbers, plain G-code, multi-filament guard</footer>
 </div>
 
 <script>
@@ -371,7 +373,7 @@ return jsZipLoadPromise;
 }
 // Preload JSZip silently on startup
 ensureJSZip().catch(() => {
-setStatus('Offline mode: .stl & manual inputs active (connect online for .3mf)', 'warn');
+setStatus('Offline mode: .stl, .obj, .gcode & manual inputs active (connect online for .3mf)', 'warn');
 });
 function formatDuration(hours) {
 const safeHours = Math.max(0, Number.isFinite(hours) ? hours : 0);
@@ -856,7 +858,8 @@ return res3;
 }
 const $ = id => document.getElementById(id);
 const sess = { name: '', ext: '', src: null, raw: null, rot: IDENT3.slice(), pos: null, vol3mf: 0, tris: 0, bb: null, fit: null };
-const cam = { yaw: 35, pitch: 32, mode: 'model' };
+const cam = { yaw: 35, pitch: 32, mode: 'model', z: 1, px: 0, py: 0, drag: false, raf: 0 };
+function schedulePreview() { if (!cam.raf) cam.raf = requestAnimationFrame(() => { cam.raf = 0; drawPreview(); }); }
 function clearModel() {
 resetSliced();
 sess.src = null; sess.pos = null; sess.raw = null; sess.bb = null;
@@ -905,7 +908,8 @@ const cv = $('previewCanvas');
 const W = cv.clientWidth, H = cv.clientHeight;
 if (!W || !sess.pos) return;
 const dpr = window.devicePixelRatio || 1;
-if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
 const g = cv.getContext('2d');
 g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
 const css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
@@ -914,26 +918,37 @@ const cy = Math.cos(yw), sy = Math.sin(yw), cp = Math.cos(pt), sp = Math.sin(pt)
 const mb = sess.bb, r = Math.hypot(mb.size[0], mb.size[1], mb.size[2]) / 2 || 1;
 const zoom = cam.mode === 'plate' ? 1 : Math.min(6, Math.max(1, 0.3 * 221 / r));
 const ctr = cam.mode === 'plate' ? [128, 128, 128] : [(mb.min[0] + mb.max[0]) / 2, (mb.min[1] + mb.max[1]) / 2, (mb.min[2] + mb.max[2]) / 2];
-const sc = zoom * (Math.min(W, H) / 2 * 0.92) / 221;
-const P = (x, y, z) => { const a = x - ctr[0], b = y - ctr[1], c = z - ctr[2], x1 = a * cy - b * sy, y1 = a * sy + b * cy; return [W / 2 + x1 * sc, H / 2 - (c * cp + y1 * sp) * sc, y1 * cp - c * sp]; };
+const sc = zoom * cam.z * (Math.min(W, H) / 2 * 0.92) / 221;
+const P = (x, y, z) => { const a = x - ctr[0], b = y - ctr[1], c = z - ctr[2], x1 = a * cy - b * sy, y1 = a * sy + b * cy; return [W / 2 + cam.px + x1 * sc, H / 2 + cam.py - (c * cp + y1 * sp) * sc, y1 * cp - c * sp]; };
 const poly = (pts, fill, stroke) => { g.beginPath(); pts.forEach((q, i) => i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])); g.closePath(); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.stroke(); } };
 g.lineWidth = 1;
 poly([P(0, 0, 0), P(256, 0, 0), P(256, 256, 0), P(0, 256, 0)], col('--surface'), col('--border'));
 g.strokeStyle = col('--border');
 for (let i = 1; i < 8; i++) { const t = i * 32; g.beginPath(); let q = P(t, 0, 0); g.moveTo(q[0], q[1]); q = P(t, 256, 0); g.lineTo(q[0], q[1]); q = P(0, t, 0); g.moveTo(q[0], q[1]); q = P(256, t, 0); g.lineTo(q[0], q[1]); g.stroke(); }
-const p = sess.pos, n = p.length / 9, step = Math.max(1, Math.ceil(n / 25000));
-const idx = [], dep = [];
-for (let t = 0; t < n; t += step) { const o = t * 9; idx.push(t); dep.push(P((p[o] + p[o + 3] + p[o + 6]) / 3, (p[o + 1] + p[o + 4] + p[o + 7]) / 3, (p[o + 2] + p[o + 5] + p[o + 8]) / 3)[2]); }
-const order = idx.map((_, i) => i).sort((i, j) => dep[j] - dep[i]);
-g.lineWidth = 0.6;
-for (const k of order) {
-const o = idx[k] * 9;
+const p = sess.pos, n = p.length / 9, step = Math.max(1, Math.ceil(n / (cam.drag ? 3000 : 25000)));
+const m = Math.ceil(n / step), pj = new Float32Array(m * 9), dep = new Float64Array(m), tid = new Uint32Array(m), ox = W / 2 + cam.px, oy = H / 2 + cam.py;
+for (let k = 0, t = 0; t < n; t += step, k++) {
+const o = t * 9; tid[k] = t; let ds = 0;
+for (let v = 0; v < 3; v++) {
+const a = p[o + v * 3] - ctr[0], b = p[o + v * 3 + 1] - ctr[1], c = p[o + v * 3 + 2] - ctr[2], x1 = a * cy - b * sy, y1 = a * sy + b * cy;
+pj[k * 9 + v * 3] = ox + x1 * sc; pj[k * 9 + v * 3 + 1] = oy - (c * cp + y1 * sp) * sc; ds += y1 * cp - c * sp;
+}
+dep[k] = ds;
+}
+const order = new Uint32Array(m);
+for (let i = 0; i < m; i++) order[i] = i;
+order.sort((i, j) => dep[j] - dep[i]);
+const cols = [];
+g.lineWidth = 0.6; g.lineJoin = 'round';
+let last = -1;
+for (let q = 0; q < m; q++) {
+const k = order[q], o = tid[k] * 9, j = k * 9;
 const ux = p[o + 3] - p[o], uy = p[o + 4] - p[o + 1], uz = p[o + 5] - p[o + 2], vx = p[o + 6] - p[o], vy = p[o + 7] - p[o + 1], vz = p[o + 8] - p[o + 2];
-let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-const nl = Math.hypot(nx, ny, nz) || 1;
-const sh = 0.35 + 0.65 * Math.abs((nx * 0.4 - ny * 0.5 + nz * 0.8) / nl / 1.02);
-const c = 'rgb(' + (16 * sh | 0) + ',' + (185 * sh | 0) + ',' + (129 * sh | 0) + ')';
-poly([P(p[o], p[o + 1], p[o + 2]), P(p[o + 3], p[o + 4], p[o + 5]), P(p[o + 6], p[o + 7], p[o + 8])], c, c);
+const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, nl = Math.hypot(nx, ny, nz) || 1;
+const lv = Math.min(31, Math.round((0.35 + 0.65 * Math.abs((nx * 0.4 - ny * 0.5 + nz * 0.8) / nl / 1.02)) * 31));
+if (lv !== last) { const sh = lv / 31, c = cols[lv] || (cols[lv] = 'rgb(' + (16 * sh | 0) + ',' + (185 * sh | 0) + ',' + (129 * sh | 0) + ')'); g.fillStyle = c; g.strokeStyle = c; last = lv; }
+g.beginPath(); g.moveTo(pj[j], pj[j + 1]); g.lineTo(pj[j + 3], pj[j + 4]); g.lineTo(pj[j + 6], pj[j + 7]); g.closePath(); g.fill();
+if (!cam.drag) g.stroke();
 }
 const bad = sess.fit.state === 'out' || sess.fit.state === 'below';
 g.strokeStyle = bad ? col('--error') : col('--muted'); g.lineWidth = bad ? 1.6 : 1; g.setLineDash([4, 4]);
@@ -985,10 +1000,23 @@ sess.rot = tcMul(tcRot90(ax, dir), sess.rot); refreshModel();
 $('rotReset').addEventListener('click', () => guarded(() => { sess.rot = IDENT3.slice(); refreshModel(); }));
 (function () {
 const cv = $('previewCanvas'); let drag = null;
-cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); });
-cv.addEventListener('pointermove', e => { if (!drag) return; cam.yaw -= (e.clientX - drag[0]) * 0.5; cam.pitch = Math.min(88, Math.max(4, cam.pitch + (e.clientY - drag[1]) * 0.4)); drag = [e.clientX, e.clientY]; drawPreview(); });
-cv.addEventListener('pointerup', () => { drag = null; });
-cv.addEventListener('dblclick', () => { cam.yaw = 35; cam.pitch = 32; drawPreview(); });
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('pointerdown', e => { if (e.button !== 0 && e.button !== 2) return; drag = { x: e.clientX, y: e.clientY, b: e.button }; cam.drag = true; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => {
+if (!drag) return;
+const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+if (drag.b === 0) { cam.yaw += dx * 0.5; cam.pitch = Math.min(88, Math.max(4, cam.pitch + dy * 0.4)); } else { cam.px += dx; cam.py += dy; }
+drag.x = e.clientX; drag.y = e.clientY; schedulePreview();
+});
+const end = () => { if (!drag) return; drag = null; cam.drag = false; schedulePreview(); };
+cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+cv.addEventListener('wheel', e => {
+e.preventDefault();
+const z0 = cam.z, z1 = Math.min(30, Math.max(0.3, z0 * Math.exp(-e.deltaY * 0.0015))), r = z1 / z0;
+const mx = e.offsetX - cv.clientWidth / 2, my = e.offsetY - cv.clientHeight / 2;
+cam.px = mx - (mx - cam.px) * r; cam.py = my - (my - cam.py) * r; cam.z = z1; schedulePreview();
+}, { passive: false });
+cv.addEventListener('dblclick', () => { cam.yaw = 35; cam.pitch = 32; cam.z = 1; cam.px = 0; cam.py = 0; schedulePreview(); });
 $('viewToggle').addEventListener('click', () => { cam.mode = cam.mode === 'model' ? 'plate' : 'model'; $('viewToggle').textContent = cam.mode === 'model' ? 'Show whole plate' : 'Zoom to model'; drawPreview(); });
 window.addEventListener('resize', drawPreview);
 })();
@@ -1137,7 +1165,7 @@ const es = cfg('enable_support'); d.supportUsed = es === '1' ? true : (es === '0
 const nUsed = Math.max(ids ? ids.length : 0, wList ? wList.length : 0, lenList ? lenList.length : 0);
 d.multi = nUsed > 1; d.nUsed = nUsed; d.filaments = null;
 if (d.multi) {
-d.grams = null; d.lengthMm = null;
+d.grams = wList && wList.length === nUsed ? +wList.reduce((a, b) => a + b, 0).toFixed(2) : null; d.lengthMm = lenList && lenList.length === nUsed ? lenList.reduce((a, b) => a + b, 0) : null;
 if (ids && ids.length === nUsed && (!wList || wList.length === nUsed) && (!lenList || lenList.length === nUsed)) {
 d.filaments = ids.map((id, n) => ({ id, type: d.typeList ? d.typeList[id - 1] || null : null, profile: d.profileList ? d.profileList[id - 1] || null : null, grams: wList ? wList[n] : null, mm: lenList ? lenList[n] : null }));
 }
@@ -1174,9 +1202,12 @@ if (je) { try { js = JSON.parse(await je.async('text')); } catch (e) { js = null
 d.lengthMm = null; d.layers = null; d.modelSec = null; d.firstLayer = { sec: null, reason: 'G-code not in file' };
 if (gc) readGcode(d, gc, slot, false);
 if (fil.length > 1) {
-d.multi = true; d.nUsed = fil.length; d.grams = null; d.lengthMm = null; d.filType = null; d.filProfile = null;
+d.multi = true; d.nUsed = fil.length; d.filType = null; d.filProfile = null;
 const al = a => a && a.length === fil.length;
 d.filaments = fil.map((f, n) => ({ id: f.id, type: f.type, profile: d.profileList ? d.profileList[f.id - 1] || null : null, grams: al(d.wList) ? d.wList[n] : (Number.isFinite(f.usedG) ? f.usedG : null), mm: al(d.lenList) ? d.lenList[n] : (Number.isFinite(f.usedM) ? f.usedM * 1000 : null) }));
+const gs = d.filaments.map(f => f.grams), ms = d.filaments.map(f => f.mm);
+if (d.grams === null && gs.every(v => v !== null)) d.grams = +gs.reduce((a, b) => a + b, 0).toFixed(2);
+d.lengthMm = ms.every(v => v !== null) ? ms.reduce((a, b) => a + b, 0) : null;
 }
 if (d.lengthMm === null && !d.multi) { const um = fil.map(f => f.usedM).filter(Number.isFinite); if (um.length) { d.lengthMm = um.reduce((a, b) => a + b, 0) * 1000; d.lengthFromUsedM = true; } }
 let bb = null;
@@ -1202,7 +1233,7 @@ setStatus('Loaded: ' + file.name + ' (G-code, no 3D model)' + (d.problems.length
 applyData(d);
 }
 function applyMultiOverride() {
-if (sliced.info && sliced.d && sliced.d.multi) { els.filamentCost.textContent = 'Not calculated'; els.totalCost.textContent = '—'; }
+if (sliced.info && sliced.d && sliced.d.multi && sliced.d.grams === null) { els.filamentCost.textContent = 'Not calculated'; els.totalCost.textContent = '—'; }
 }
 function renderSourceBadge() {
 const b = $('srcBadge'), s = sliced.src;
@@ -1227,9 +1258,9 @@ const spoolG = Math.max(1, (parseFloat(els.spoolKg.value) || 1) * 1000), parts =
 if (d.grams !== null) parts.push(d.grams.toFixed(2) + ' g');
 if (d.lengthMm !== null) parts.push((d.lengthMm / 1000).toFixed(3) + ' m');
 if (d.grams !== null) parts.push((d.grams / spoolG * 100).toFixed(2) + '% of spool');
-$('slFilament').textContent = d.multi ? 'Multiple filaments (' + d.nUsed + '), not combined' : (parts.length ? parts.join(' · ') : NA);
+$('slFilament').textContent = d.multi ? (parts.length ? d.nUsed + ' filaments: ' + parts.join(' · ') + ' (combined)' : 'Multiple filaments (' + d.nUsed + ')') : (parts.length ? parts.join(' · ') : NA);
 $('multiNote').style.display = d.multi ? '' : 'none';
-$('multiNote').textContent = d.multi ? d.nUsed + ' filaments are used. The single-spool price cannot cost several materials, so filament and total cost are not calculated. Individual usage is listed in the slicer details.' : '';
+$('multiNote').textContent = d.multi ? (d.grams !== null ? d.nUsed + ' filaments are used. Cost uses the combined weight at the single spool price, because per-filament spool prices are not supported yet. Individual usage is in the slicer details.' : d.nUsed + ' filaments are used and their weights are not in the file, so filament and total cost are not calculated.') : '';
 $('slFirstLayer').textContent = d.firstLayer.sec !== null ? '≈ ' + d.firstLayer.sec.toFixed(1) + ' s (Approximate)' : 'Unavailable';
 $('slFirstLayer').title = d.firstLayer.sec !== null ? 'Calculated from G-code moves (distance ÷ feedrate, ignores acceleration). The slicer’s own first-layer field is empty.' : (d.firstLayer.reason || '');
 const rows = [['File', d.fileName], ['Slicer', d.slicerName ? d.slicerName + ' ' + (d.slicerVersion || '') : (d.slicerVersion ? 'Version ' + d.slicerVersion : null)], ['Printer', d.printer], ['Process preset', d.process],
