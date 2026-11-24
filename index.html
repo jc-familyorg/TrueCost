@@ -1370,15 +1370,16 @@ $('plateSelect').addEventListener('change', async e => { const p = sliced.info &
 
 // ---------- print log, measured values and calibration (stored in this browser; export/import for backup)
 const LOG_KEY = 'truecost.log.v1', CAL_KEY = 'truecost.cal.v1';
+const PLOG_MAX_G = 50000, PLOG_MAX_H = 5000;
 const plog = { entries: [], storageOK: true, calOn: false, clearArmed: 0, msg: '' };
 function plogValid(e) {
-const num = v => v === null || (typeof v === 'number' && Number.isFinite(v));
+const num = v => v === null || (typeof v === 'number' && Number.isFinite(v)), inr = (v, mx) => v === null || (v > 0 && v <= mx);
 return e && typeof e === 'object' && typeof e.id === 'string' && e.id.length > 0 && e.id.length < 80 && typeof e.date === 'string' && ['rough', 'sliced', 'manual'].includes(e.kind) &&
-e.est && num(e.est.grams) && num(e.est.hours) && e.actual && num(e.actual.grams) && num(e.actual.hours) && (e.raw === null || (e.raw && num(e.raw.grams) && num(e.raw.hours)));
+e.est && num(e.est.grams) && num(e.est.hours) && e.actual && num(e.actual.grams) && num(e.actual.hours) && inr(e.actual.grams, PLOG_MAX_G) && inr(e.actual.hours, PLOG_MAX_H) && (e.raw === null || (e.raw && num(e.raw.grams) && num(e.raw.hours)));
 }
 function plogClean(e) {
 const n = v => (typeof v === 'number' && Number.isFinite(v) ? v : null), t = (v, k) => (typeof v === 'string' ? v.slice(0, k) : '');
-return { id: e.id, date: e.date.slice(0, 40), kind: e.kind, name: t(e.name, 200), material: t(e.material, 12), nozzle: t(e.nozzle, 6), layer: t(e.layer, 6), infill: t(e.infill, 6),
+return { id: e.id, date: e.date.slice(0, 40), kind: e.kind, name: t(e.name, 200), material: t(e.material, 24), nozzle: t(e.nozzle, 6), layer: t(e.layer, 6), infill: t(e.infill, 6),
 est: { grams: n(e.est.grams), hours: n(e.est.hours) }, raw: e.raw ? { grams: n(e.raw.grams), hours: n(e.raw.hours) } : null, actual: { grams: n(e.actual.grams), hours: n(e.actual.hours) } };
 }
 function plogLoad() {
@@ -1409,23 +1410,30 @@ const g = parseFloat(els.filamentGrams.value), h = parseFloat(els.printHours.val
 if (!Number.isFinite(g) || !Number.isFinite(h) || g <= 0 || h <= 0) { plog.msg = 'Enter a filament weight and print time above before logging a print.'; renderLog(); return; }
 const s = sliced.src, same = s && (s.grams === null || els.filamentGrams.value === s.grams) && (s.hours === null || els.printHours.value === s.hours);
 const kind = same ? (s.kind === 'rough' ? 'rough' : 'sliced') : 'manual';
+const nm = sess.name || '', sd = kind === 'sliced' ? sliced.d : null;
+const meta = sd ? { material: sd.multi ? 'Multi-filament' : (sd.filType || ''), nozzle: sd.nozzleDia || '', layer: sd.layerHeight || '', infill: '' } : { material: els.filamentType.value, nozzle: els.nozzleSize.value, layer: $('layerHeight').value, infill: els.infillPct.value };
+const cfgNow = [meta.material, meta.nozzle, meta.layer, meta.infill].join('|');
+const dup = plog.entries.find(e => e.actual.grams === null && e.actual.hours === null && e.kind === kind && e.name === nm && e.est.grams === g && e.est.hours === h && [e.material, e.nozzle, e.layer, e.infill].join('|') === cfgNow);
+if (dup) { plog.msg = 'This print is already logged. Enter at least its actual weight or time first; after that you can log another print of the same part.'; renderLog(); return; }
 plog.msg = '';
-plog.entries.unshift({ id: newId(), date: new Date().toISOString(), kind, name: sess.name || '', material: els.filamentType.value, nozzle: els.nozzleSize.value, layer: $('layerHeight').value, infill: els.infillPct.value,
+plog.entries.unshift({ id: newId(), date: new Date().toISOString(), kind, name: sess.name || '', material: meta.material, nozzle: meta.nozzle, layer: meta.layer, infill: meta.infill,
 est: { grams: g, hours: h }, raw: kind === 'rough' && sess.lastRaw ? { grams: sess.lastRaw.grams, hours: sess.lastRaw.hours } : null, actual: { grams: null, hours: null } });
 plogSave();
 }
 function pct(a, b) { return (a / b - 1) * 100; }
+function fmtPct(p) { return (p >= 0 ? '+' : '-') + (Math.abs(p) >= 1000 ? '>999' : Math.abs(p).toFixed(1)) + '%'; }
 function renderLog() {
 const list = $('logList'), cf = plogFactors();
 list.textContent = '';
 $('logNote').textContent = plog.msg || (plog.storageOK ? '' : 'Browser storage is unavailable, so this log lasts only until you close the page. Use Export to keep it.');
 $('logNote').style.color = plog.msg ? 'var(--warn)' : '';
-const ready = cf.w !== null || cf.t !== null;
+const ready = cf.w !== null || cf.t !== null, other = plog.entries.filter(e => e.kind !== 'rough').length;
 $('calOn').disabled = !ready; if (!ready) plog.calOn = false;
 $('calOn').checked = plog.calOn;
 const need = [cf.nw < 3 ? 'weight (' + cf.nw + ' of 3 rough prints with an actual weight)' : null, cf.nt < 3 ? 'time (' + cf.nt + ' of 3 with an actual time)' : null].filter(Boolean);
 $('calInfo').textContent = (ready ? 'From your log: ' + [cf.w ? 'weight × ' + cf.w.toFixed(3) + ' (' + cf.nw + ' prints)' : null, cf.t ? 'time × ' + cf.t.toFixed(3) + ' (' + cf.nt + ' prints)' : null].filter(Boolean).join(', ') + '. ' : '') +
-(need.length ? 'Still needed for ' + need.join(' and ') + '. Only prints logged from a rough estimate count.' : 'Median of actual ÷ rough estimate, limited to 0.5–2×.');
+(need.length ? 'Still needed for ' + need.join(' and ') + '. ' : 'Median of actual ÷ rough estimate, limited to 0.5–2×. ') +
+(other ? other + ' of your ' + plog.entries.length + ' ' + (other === 1 ? 'entry was' : 'entries were') + ' logged from slicer files or typed values, so ' + (other === 1 ? 'it does' : 'they do') + ' not count. To calibrate, load an STL, OBJ or unsliced 3MF, then click Log this print.' : 'Only prints logged from a rough estimate count.');
 for (const e of plog.entries) {
 const row = document.createElement('div'); row.className = 'log-row';
 const head = document.createElement('div'); head.className = 'log-head';
@@ -1433,16 +1441,22 @@ const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent =
 const dt = document.createElement('span'); dt.className = 'dt'; dt.textContent = e.date.slice(0, 10);
 head.append(nm, dt);
 const est = document.createElement('div'); est.className = 'log-est';
-est.textContent = 'Estimate ' + (e.est.grams !== null ? e.est.grams + ' g' : '—') + ' · ' + (e.est.hours !== null ? e.est.hours + ' h' : '—') + ' (' + { rough: 'Rough', sliced: 'Slicer-reported', manual: 'Manual' }[e.kind] + ') · ' + [e.material, e.nozzle && e.nozzle + ' mm', e.layer && e.layer + ' mm layers', e.infill && e.infill + '% infill'].filter(Boolean).join(', ');
+est.textContent = 'Estimate ' + (e.est.grams !== null ? +e.est.grams.toFixed(2) + ' g' : '—') + ' · ' + (e.est.hours !== null ? +e.est.hours.toFixed(2) + ' h' : '—') + ' (' + { rough: 'Rough', sliced: 'Slicer-reported', manual: 'Manual' }[e.kind] + ') · ' + [e.material, e.nozzle && e.nozzle + ' mm', e.layer && e.layer + ' mm layers', e.infill && e.infill + '% infill'].filter(Boolean).join(', ');
 const ins = document.createElement('div'); ins.className = 'log-in';
 const mk = (ph, key, step) => { const i = document.createElement('input'); i.type = 'number'; i.min = '0'; i.step = step; i.placeholder = ph; i.setAttribute('aria-label', ph); if (e.actual[key] !== null) i.value = String(e.actual[key]);
-i.addEventListener('change', () => { const v = parseFloat(i.value); e.actual[key] = Number.isFinite(v) && v > 0 ? v : null; plogSave(); });
+i.addEventListener('change', () => {
+const v = parseFloat(i.value), mx = key === 'grams' ? PLOG_MAX_G : PLOG_MAX_H;
+plog.msg = '';
+if (Number.isFinite(v) && v > mx) { e.actual[key] = null; plog.msg = 'That value is out of range (up to ' + PLOG_MAX_G.toLocaleString('en-US') + ' g and ' + PLOG_MAX_H.toLocaleString('en-US') + ' h), so it was not saved.'; }
+else e.actual[key] = Number.isFinite(v) && v > 0 ? +v.toFixed(3) : null;
+plogSave();
+});
 const w = document.createElement('div'); w.className = 'input-wrap'; const u = document.createElement('span'); u.className = 'unit'; u.textContent = key === 'grams' ? 'g actual' : 'h actual'; w.append(i, u); return w; };
 ins.append(mk('Actual weight (g)', 'grams', '0.1'), mk('Actual time (h)', 'hours', '0.01'));
 const err = document.createElement('div'); err.className = 'log-err';
 const parts = [];
-if (e.actual.grams !== null && e.est.grams) parts.push('Weight ' + (pct(e.actual.grams, e.est.grams) >= 0 ? '+' : '') + pct(e.actual.grams, e.est.grams).toFixed(1) + '%');
-if (e.actual.hours !== null && e.est.hours) parts.push('Time ' + (pct(e.actual.hours, e.est.hours) >= 0 ? '+' : '') + pct(e.actual.hours, e.est.hours).toFixed(1) + '%');
+if (e.actual.grams !== null && e.est.grams) parts.push('Weight ' + fmtPct(pct(e.actual.grams, e.est.grams)));
+if (e.actual.hours !== null && e.est.hours) parts.push('Time ' + fmtPct(pct(e.actual.hours, e.est.hours)));
 err.textContent = parts.length ? 'Measured vs estimate: ' + parts.join(' · ') : 'Enter the actual weight and time after printing (Measured).';
 const del = document.createElement('button'); del.type = 'button'; del.className = 'link'; del.textContent = 'Delete this entry';
 del.addEventListener('click', () => { plog.entries = plog.entries.filter(x => x.id !== e.id); plogSave(); });
