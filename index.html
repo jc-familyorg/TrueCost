@@ -108,6 +108,18 @@
   }
   button.secondary:hover { border-color: var(--accent); color: var(--accent); }
   .test-output { font-size: .75rem; color: var(--muted); text-align: right; }
+  #previewCanvas { width: 100%; height: 340px; display: block; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); cursor: grab; touch-action: none; }
+  #previewCanvas:active { cursor: grabbing; }
+  .dims-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-top: 1rem; }
+  .dims { font-size: 1.35rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .fit-badge { font-size: .75rem; font-weight: 600; padding: .3rem .7rem; border-radius: 999px; white-space: nowrap; color: var(--accent); background: var(--accent-soft); }
+  .fit-badge.close { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .fit-badge.out, .fit-badge.below { color: var(--error); background: color-mix(in srgb, var(--error) 14%, transparent); }
+  .fit-detail { font-size: .8rem; color: var(--error); margin-top: .4rem; }
+  .orient { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .fit-badge.muted { color: var(--muted); background: var(--surface-2); }
+  details.sl summary { cursor: pointer; color: var(--muted); font-size: .85rem; padding: .6rem 0; }
+  details.sl .line-item { font-size: .82rem; padding: .45rem 0; }
 </style>
 </head>
 <body>
@@ -129,11 +141,43 @@
           <div class="icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0l-4 4m4-4l4 4"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
           </div>
-          <strong>Drop an .STL or .3MF file</strong>
+          <strong>Drop an .STL, .3MF, .OBJ or .GCODE file</strong>
           <span class="sub">or click to browse</span>
           <div class="file-status" id="fileStatus">No file loaded — manual mode active</div>
-          <input type="file" id="fileInput" accept=".stl,.3mf" />
+          <input type="file" id="fileInput" accept=".stl,.3mf,.obj,.gcode" />
         </div>
+      </section>
+
+      <section class="card" id="placement" style="display:none">
+        <h2>Placement &amp; Fit</h2>
+        <canvas id="previewCanvas"></canvas>
+        <div style="margin-top:.6rem"><button type="button" class="secondary" id="viewToggle">Show whole plate</button></div>
+        <div class="dims-row">
+          <div><div class="total-label">Model size (X × Y × Z) · build plate 256 × 256 × 256 mm</div><div class="dims" id="dimsText">—</div></div>
+          <span class="fit-badge" id="fitBadge">—</span>
+        </div>
+        <div class="fit-detail" id="fitDetail"></div>
+        <div class="grid-2" style="margin-top:1rem">
+          <div id="objUnitWrap" style="display:none">
+            <label for="objUnit">OBJ units</label>
+            <select id="objUnit"><option value="1" selected>Millimetres</option><option value="10">Centimetres</option><option value="1000">Metres</option><option value="25.4">Inches</option></select>
+            <div class="hint" id="objUnitHint"></div>
+          </div>
+          <div>
+            <label for="edgeMargin">Edge margin</label>
+            <div class="input-wrap"><input type="number" id="edgeMargin" value="3" min="0" step="1" /><span class="unit">mm</span></div>
+          </div>
+        </div>
+        <div id="orientWrap" style="margin-top:1rem">
+          <label>Orientation (STL / OBJ only) · always re-seated on the plate</label>
+          <div class="orient">
+            <button type="button" class="secondary" data-rot="0,-1">X −90°</button><button type="button" class="secondary" data-rot="0,1">X +90°</button>
+            <button type="button" class="secondary" data-rot="1,-1">Y −90°</button><button type="button" class="secondary" data-rot="1,1">Y +90°</button>
+            <button type="button" class="secondary" data-rot="2,-1">Z −90°</button><button type="button" class="secondary" data-rot="2,1">Z +90°</button>
+            <button type="button" class="secondary" id="rotReset">Reset</button>
+          </div>
+        </div>
+        <div class="hint" id="placeNote"></div>
       </section>
 
       <section class="card">
@@ -213,7 +257,7 @@
     <aside class="card results">
       <h2>Estimate</h2>
       <div class="total-box">
-        <div class="total-label">Total print cost</div>
+        <div class="total-label">Total print cost <span class="fit-badge" id="srcBadge" style="display:none;margin-left:.4rem"></span></div>
         <div class="total-value" id="totalCost">$0.00</div>
         <div class="time-pill"><span>Print duration</span><strong id="formattedTime">2h 30m</strong></div>
       </div>
@@ -222,6 +266,19 @@
       <div class="line-item"><span>Electricity (<span id="kwhUsed">0.00</span> kWh)</span><span id="electricityCost">$0.00</span></div>
       <div class="line-item"><span>VentoBox filter wear (~$0.08/hr)</span><span id="filterCost">$0.00</span></div>
       <div class="line-item"><span>Avg. power draw</span><span id="avgWatts">180 W</span></div>
+
+      <div id="slicerBlock" style="display:none">
+        <div class="line-item"><span>Model printing time</span><span id="slModelTime">—</span></div>
+        <div class="line-item"><span>Total time (incl. preparation)</span><span id="slTotalTime">—</span></div>
+        <div class="line-item"><span>Filament used</span><span id="slFilament">—</span></div>
+        <div class="line-item"><span>First layer</span><span id="slFirstLayer">—</span></div>
+        <div id="plateWrap" style="display:none;margin-top:.6rem">
+          <label for="plateSelect" id="plateMsg"></label>
+          <select id="plateSelect"></select>
+        </div>
+        <div class="hint" id="multiNote" style="display:none"></div>
+        <details class="sl" id="slicerDetails"><summary>Slicer details</summary><div id="slDetailsBody"></div></details>
+      </div>
 
       <p class="note"><strong>Power model:</strong> ~1,000 W for the first ~4 minutes of bed/nozzle heat-up, then steady-state draw for your selected filament.</p>
 
@@ -354,6 +411,7 @@ errorEl.textContent = '';
 return val;
 }
 function recalculateFromMesh() {
+if (sliced.holdRough) return;
 const infillPct = validateNumberField(els.infillPct, els.infillPctError, {
 min: 0,
 max: 100,
@@ -375,8 +433,10 @@ const extrusionSeconds = (effectiveVolMm3 / flowMm3PerSec) * 1.45;
 const hours = (extrusionSeconds + 360) / 3600;
 els.filamentGrams.value = grams.toFixed(1);
 els.printHours.value = hours.toFixed(2);
+sliced.src = { kind: 'rough', grams: els.filamentGrams.value, hours: els.printHours.value };
 }
 function updateCalculations() {
+renderSlicerPanel();
 const grams = validateNumberField(els.filamentGrams, els.filamentGramsError, { min: 0, label: 'Grams' });
 const spoolPrice = validateNumberField(els.spoolPrice, els.spoolPriceError, { min: 0, label: 'Price' });
 const hours = validateNumberField(els.printHours, els.printHoursError, { min: 0, label: 'Hours' });
@@ -406,7 +466,9 @@ els.kwhUsed.textContent = kwh.toFixed(2);
 els.avgWatts.textContent = (hours > 0 ? Math.round((kwh / hours) * 1000) : steadyWatts) + ' W avg (' + steadyWatts + ' W steady)';
 els.electricityCost.textContent = '$' + elecCost.toFixed(2);
 els.filterCost.textContent = '$' + ventoboxCost.toFixed(2);
+applyMultiOverride();
 }
+/*TCGEO_START*/
 function signedVolumeOfTriangle(p1, p2, p3) {
 return (
 p1.x * (p2.y * p3.z - p3.y * p2.z) -
@@ -445,8 +507,11 @@ const isBinary = expectedBinaryLen === buffer.byteLength ||
 (!startsWithSolid && expectedBinaryLen > 0 && expectedBinaryLen <= buffer.byteLength);
 let totalSignedVolMm3 = 0;
 let triangleCount = 0;
+let pos = null;
+const asciiPos = [];
 if (isBinary) {
 const triCount = view.getUint32(80, true);
+pos = new Float32Array(triCount * 9);
 let offset = 84;
 for (let i = 0; i < triCount; i++) {
 offset += 12;
@@ -466,6 +531,7 @@ y: view.getFloat32(offset + 28, true),
 z: view.getFloat32(offset + 32, true)
 };
 totalSignedVolMm3 += signedVolumeOfTriangle(p1, p2, p3);
+pos.set([p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, p3.x, p3.y, p3.z], triangleCount * 9);
 triangleCount++;
 offset += 38;
 }
@@ -483,13 +549,90 @@ z: parseFloat(match.at(3))
 if (verts.length === 3) {
 totalSignedVolMm3 += signedVolumeOfTriangle(verts.at(0), verts.at(1), verts.at(2));
 triangleCount++;
+asciiPos.push(verts[0].x, verts[0].y, verts[0].z, verts[1].x, verts[1].y, verts[1].z, verts[2].x, verts[2].y, verts[2].z);
 verts.length = 0;
 }
 }
 }
-return validateMeshResult(totalSignedVolMm3, triangleCount);
+const stlRes = validateMeshResult(totalSignedVolMm3, triangleCount);
+stlRes.tris = pos || Float32Array.from(asciiPos);
+return stlRes;
 }
 const IDENTITY_3X4 = Array.of(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0);
+/*TCGEO_END_PARSERS*/
+const BED_MM = [256, 256, 256];
+const TC_EPS = 1e-6;
+const TC_PLATE_TOL = 1e-3;
+const IDENT3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+function tcBounds(p) {
+const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+for (let i = 0; i < p.length; i += 3) for (let a = 0; a < 3; a++) { const v = p[i + a]; if (v < mn[a]) mn[a] = v; if (v > mx[a]) mx[a] = v; }
+return { min: mn, max: mx, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]] };
+}
+function tcVolumeMm3(p) {
+let s = 0;
+for (let i = 0; i < p.length; i += 9) s += (p[i] * (p[i + 4] * p[i + 8] - p[i + 7] * p[i + 5]) - p[i + 3] * (p[i + 1] * p[i + 8] - p[i + 7] * p[i + 2]) + p[i + 6] * (p[i + 1] * p[i + 5] - p[i + 4] * p[i + 2])) / 6;
+return s;
+}
+function tcRot90(axis, dir) {
+const s = dir;
+if (axis === 0) return [1, 0, 0, 0, 0, -s, 0, s, 0];
+if (axis === 1) return [0, 0, s, 0, 1, 0, -s, 0, 0];
+return [0, -s, 0, s, 0, 0, 0, 0, 1];
+}
+function tcMul(a, b) {
+const o = [];
+for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) o.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+return o;
+}
+function tcApply(src, R) {
+const o = new Float32Array(src.length);
+for (let i = 0; i < src.length; i += 3) {
+const x = src[i], y = src[i + 1], z = src[i + 2];
+o[i] = R[0] * x + R[1] * y + R[2] * z; o[i + 1] = R[3] * x + R[4] * y + R[5] * z; o[i + 2] = R[6] * x + R[7] * y + R[8] * z;
+}
+return o;
+}
+// Rests the model on the plate: lowest point is exactly Z = 0, XY centred on the bed.
+function tcSeat(p) {
+const b = tcBounds(p);
+const dx = BED_MM[0] / 2 - (b.min[0] + b.max[0]) / 2, dy = BED_MM[1] / 2 - (b.min[1] + b.max[1]) / 2, dz = -b.min[2];
+for (let i = 0; i < p.length; i += 3) { p[i] += dx; p[i + 1] += dy; p[i + 2] += dz; }
+return p;
+}
+function tcFitCheck(bb, margin) {
+const names = ['X', 'Y', 'Z'], problems = [];
+let minClear = Infinity;
+if (bb.min[2] < -TC_PLATE_TOL) return { state: 'below', minClear: bb.min[2], problems: ['Model extends ' + (-bb.min[2]).toFixed(2) + ' mm below the plate'] };
+for (let a = 0; a < 3; a++) {
+const clear = a === 2 ? BED_MM[2] - bb.max[2] : Math.min(bb.min[a], BED_MM[a] - bb.max[a]);
+if (bb.size[a] > BED_MM[a] + TC_EPS) problems.push(names[a] + ' is ' + bb.size[a].toFixed(1) + ' mm (limit ' + BED_MM[a] + ' mm)');
+else if (clear < -TC_EPS) problems.push(names[a] + ' hangs off the plate by ' + (-clear).toFixed(1) + ' mm');
+if (clear < minClear) minClear = clear;
+}
+const state = problems.length ? 'out' : (minClear < margin - TC_EPS ? 'close' : 'fits');
+return { state, minClear, problems };
+}
+function parseOBJ(text) {
+const v = [], out = [];
+const lines = text.split(String.fromCharCode(10));
+for (let i = 0; i < lines.length; i++) {
+const l = lines[i].trim();
+if (l.startsWith('v ')) {
+const t = l.split(/\s+/);
+const x = parseFloat(t[1]), y = parseFloat(t[2]), z = parseFloat(t[3]);
+if (![x, y, z].every(Number.isFinite)) throw new Error('OBJ has an invalid vertex on line ' + (i + 1) + '.');
+v.push(x, y, z);
+} else if (l.startsWith('f ')) {
+const idx = l.slice(2).trim().split(/\s+/).map(tok => { const n = parseInt(tok.split('/')[0], 10); return n < 0 ? v.length / 3 + n : n - 1; });
+if (idx.length < 3 || idx.some(k => !Number.isInteger(k) || k < 0 || k >= v.length / 3)) throw new Error('OBJ has an invalid face on line ' + (i + 1) + '.');
+for (let k = 1; k < idx.length - 1; k++) for (const j of [idx[0], idx[k], idx[k + 1]]) out.push(v[j * 3], v[j * 3 + 1], v[j * 3 + 2]);
+}
+}
+if (!out.length) throw new Error('OBJ contains no faces.');
+return Float32Array.from(out);
+}
+/*TCGEO_END*/
 function splitWhitespace(str) {
 return str.trim().split(new RegExp(String.fromCharCode(92) + 's+'));
 }
@@ -592,6 +735,8 @@ rootModelPath = resolve3MFPath('', '/' + fallback);
 }
 const rootDoc = await getModelDoc(rootModelPath);
 const localMeshVolumeCache = new Map();
+const localTriCache = new Map();
+const worldTris = [];
 let totalTriangles = 0;
 function getLocalMeshVolumeMm3(modelPath, objectId, objEl, doc) {
 const key = modelPath + '#' + objectId;
@@ -602,6 +747,8 @@ localMeshVolumeCache.set(key, 0);
 return 0;
 }
 const unitVolFactor = getDocUnitVolumeFactor(doc);
+const lin = Math.cbrt(unitVolFactor);
+const flat = [];
 const vertices = Array.from(meshEl.getElementsByTagName('vertex')).map(v => ({
 x: parseFloat(v.getAttribute('x')),
 y: parseFloat(v.getAttribute('y')),
@@ -616,9 +763,11 @@ const v2 = vertices.at(parseInt(t.getAttribute('v2'), 10));
 const v3 = vertices.at(parseInt(t.getAttribute('v3'), 10));
 if (v1 && v2 && v3) {
 signedVol += signedVolumeOfTriangle(v1, v2, v3);
+flat.push(v1.x * lin, v1.y * lin, v1.z * lin, v2.x * lin, v2.y * lin, v2.z * lin, v3.x * lin, v3.y * lin, v3.z * lin);
 totalTriangles++;
 }
 }
+localTriCache.set(key, flat);
 const volMm3 = signedVol * unitVolFactor;
 localMeshVolumeCache.set(key, volMm3);
 return volMm3;
@@ -641,6 +790,12 @@ const localSignedVolMm3 = getLocalMeshVolumeMm3(modelPath, objectId, obj, doc);
 if (localSignedVolMm3 !== 0) {
 const det = determinant3x3(worldMatrix);
 accumulatedSignedVolMm3 += localSignedVolMm3 * det;
+const lt = localTriCache.get(visitKey);
+const m = worldMatrix;
+for (let k = 0; k < lt.length; k += 3) {
+const x = lt[k], y = lt[k + 1], z = lt[k + 2];
+worldTris.push(x * m[0] + y * m[3] + z * m[6] + m[9], x * m[1] + y * m[4] + z * m[7] + m[10], x * m[2] + y * m[5] + z * m[8] + m[11]);
+}
 }
 const components = obj.getElementsByTagName('component');
 for (let i = 0; i < components.length; i++) {
@@ -695,44 +850,400 @@ IDENTITY_3X4
 );
 }
 }
-return validateMeshResult(totalBuildSignedVolMm3, totalTriangles);
+const res3 = validateMeshResult(totalBuildSignedVolMm3, totalTriangles);
+res3.tris = Float32Array.from(worldTris);
+return res3;
 }
+const $ = id => document.getElementById(id);
+const sess = { name: '', ext: '', src: null, raw: null, rot: IDENT3.slice(), pos: null, vol3mf: 0, tris: 0, bb: null, fit: null };
+const cam = { yaw: 35, pitch: 32, mode: 'model' };
+function clearModel() {
+resetSliced();
+sess.src = null; sess.pos = null; sess.raw = null; sess.bb = null;
+lastParsedVolumeCm3 = null;
+$('placement').style.display = 'none';
+}
+function applyObjUnit() {
+const f = parseFloat($('objUnit').value);
+sess.src = new Float32Array(sess.raw.length);
+for (let i = 0; i < sess.raw.length; i++) sess.src[i] = sess.raw[i] * f;
+}
+function refreshModel() {
+if (!sess.src) return;
+const fixed = sess.ext === '3mf';
+const p = fixed ? sess.src : tcSeat(tcApply(sess.src, sess.rot));
+sess.pos = p;
+const bb = tcBounds(p);
+const sv = fixed ? 1 : tcVolumeMm3(p);
+const volCm3 = fixed ? sess.vol3mf : Math.abs(sv) / 1000;
+if (!(volCm3 > 0) || !Number.isFinite(volCm3)) throw new Error('Mesh volume is zero or non-finite (open surface or degenerate triangles).');
+lastParsedVolumeCm3 = volCm3;
+const margin = Math.max(0, parseFloat($('edgeMargin').value) || 0);
+const fit = tcFitCheck(bb, margin);
+sess.bb = bb; sess.fit = fit;
+$('placement').style.display = '';
+$('dimsText').textContent = bb.size.map(v => v.toFixed(1)).join(' × ') + ' mm';
+const badge = $('fitBadge');
+badge.className = 'fit-badge ' + (fit.state === 'fits' ? '' : fit.state);
+badge.textContent = { fits: 'Fits', close: 'Close to edge', out: 'Does not fit', below: 'Below plate' }[fit.state];
+$('fitDetail').textContent = fit.state === 'close' ? 'Only ' + Math.max(0, fit.minClear).toFixed(1) + ' mm clearance to the nearest edge.' : fit.problems.join(' · ');
+$('fitDetail').style.color = fit.state === 'close' ? 'var(--warn)' : 'var(--error)';
+$('placeNote').textContent = fixed ? 'Position and orientation come from the slicer project and cannot be changed here.' :
+'Centred on the plate and resting at Z = 0. Rotations are exact 90° steps.' + (sess.ext === 'obj' ? ' OBJ files are often Y-up: use X ±90° if the model looks lying down.' : '');
+if (sess.ext === 'obj') {
+const mx = Math.max(...bb.size);
+$('objUnitHint').textContent = mx < 5 ? 'Very small. Check the unit (try Inches, Centimetres or Metres).' : (mx > 2000 ? 'Very large. Check the unit.' : '');
+}
+const inv = !fixed && sv < 0 ? ', inverted normals' : '';
+setStatus('Loaded: ' + sess.name + ' (' + volCm3.toFixed(1) + ' cm³, ' + sess.tris.toLocaleString() + ' tris' + inv + ')', inv ? 'warn' : 'ok');
+recalculateFromMesh();
+updateCalculations();
+drawPreview();
+}
+function drawPreview() {
+const cv = $('previewCanvas');
+const W = cv.clientWidth, H = cv.clientHeight;
+if (!W || !sess.pos) return;
+const dpr = window.devicePixelRatio || 1;
+if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+const g = cv.getContext('2d');
+g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+const css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
+const yw = cam.yaw * Math.PI / 180, pt = cam.pitch * Math.PI / 180;
+const cy = Math.cos(yw), sy = Math.sin(yw), cp = Math.cos(pt), sp = Math.sin(pt);
+const mb = sess.bb, r = Math.hypot(mb.size[0], mb.size[1], mb.size[2]) / 2 || 1;
+const zoom = cam.mode === 'plate' ? 1 : Math.min(6, Math.max(1, 0.3 * 221 / r));
+const ctr = cam.mode === 'plate' ? [128, 128, 128] : [(mb.min[0] + mb.max[0]) / 2, (mb.min[1] + mb.max[1]) / 2, (mb.min[2] + mb.max[2]) / 2];
+const sc = zoom * (Math.min(W, H) / 2 * 0.92) / 221;
+const P = (x, y, z) => { const a = x - ctr[0], b = y - ctr[1], c = z - ctr[2], x1 = a * cy - b * sy, y1 = a * sy + b * cy; return [W / 2 + x1 * sc, H / 2 - (c * cp + y1 * sp) * sc, y1 * cp - c * sp]; };
+const poly = (pts, fill, stroke) => { g.beginPath(); pts.forEach((q, i) => i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])); g.closePath(); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.stroke(); } };
+g.lineWidth = 1;
+poly([P(0, 0, 0), P(256, 0, 0), P(256, 256, 0), P(0, 256, 0)], col('--surface'), col('--border'));
+g.strokeStyle = col('--border');
+for (let i = 1; i < 8; i++) { const t = i * 32; g.beginPath(); let q = P(t, 0, 0); g.moveTo(q[0], q[1]); q = P(t, 256, 0); g.lineTo(q[0], q[1]); q = P(0, t, 0); g.moveTo(q[0], q[1]); q = P(256, t, 0); g.lineTo(q[0], q[1]); g.stroke(); }
+const p = sess.pos, n = p.length / 9, step = Math.max(1, Math.ceil(n / 25000));
+const idx = [], dep = [];
+for (let t = 0; t < n; t += step) { const o = t * 9; idx.push(t); dep.push(P((p[o] + p[o + 3] + p[o + 6]) / 3, (p[o + 1] + p[o + 4] + p[o + 7]) / 3, (p[o + 2] + p[o + 5] + p[o + 8]) / 3)[2]); }
+const order = idx.map((_, i) => i).sort((i, j) => dep[j] - dep[i]);
+g.lineWidth = 0.6;
+for (const k of order) {
+const o = idx[k] * 9;
+const ux = p[o + 3] - p[o], uy = p[o + 4] - p[o + 1], uz = p[o + 5] - p[o + 2], vx = p[o + 6] - p[o], vy = p[o + 7] - p[o + 1], vz = p[o + 8] - p[o + 2];
+let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+const nl = Math.hypot(nx, ny, nz) || 1;
+const sh = 0.35 + 0.65 * Math.abs((nx * 0.4 - ny * 0.5 + nz * 0.8) / nl / 1.02);
+const c = 'rgb(' + (16 * sh | 0) + ',' + (185 * sh | 0) + ',' + (129 * sh | 0) + ')';
+poly([P(p[o], p[o + 1], p[o + 2]), P(p[o + 3], p[o + 4], p[o + 5]), P(p[o + 6], p[o + 7], p[o + 8])], c, c);
+}
+const bad = sess.fit.state === 'out' || sess.fit.state === 'below';
+g.strokeStyle = bad ? col('--error') : col('--muted'); g.lineWidth = bad ? 1.6 : 1; g.setLineDash([4, 4]);
+const cr = [[0, 0], [256, 0], [256, 256], [0, 256]];
+cr.forEach(([x, y], i) => { const [x2, y2] = cr[(i + 1) % 4]; for (const z of [0, 256]) { const a = P(x, y, z), b = P(x2, y2, z); g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); } const a = P(x, y, 0), b = P(x, y, 256); g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); });
+g.setLineDash([]);
+}
+function guarded(fn) { try { fn(); } catch (err) { console.error(err); setStatus(err.message || 'Error updating model.', 'error'); } }
 async function handleFile(file) {
 if (!file) return;
 const ext = file.name.split('.').pop().toLowerCase();
-setStatus('Parsing ' + file.name + '...', 'ok');
+setStatus('Parsing ' + file.name + '…', 'ok');
 try {
-const buffer = await file.arrayBuffer();
-let result;
-if (ext === 'stl') {
-result = parseSTL(buffer);
-} else if (ext === '3mf') {
-result = await parse3MF(buffer);
-} else {
-lastParsedVolumeCm3 = null;
-setStatus('Unsupported file format. Please upload .stl or .3mf.', 'error');
-return;
+if (!['stl', '3mf', 'obj', 'gcode'].includes(ext)) {
+clearModel(); setStatus('Unsupported file format. Please upload .stl, .3mf, .obj or .gcode.', 'error'); return;
 }
-lastParsedVolumeCm3 = result.volumeCm3;
-if (result.invertedNormals) {
-setStatus(
-'Loaded: ' + file.name + ' (' + result.volumeCm3.toFixed(1) + ' cm³ — warning: inverted normals)',
-'warn'
-);
+if (file.size > 300 * 1024 * 1024) throw new Error('File is over 300 MB, which is too large to load in the browser.');
+if (ext === 'gcode') { clearModel(); sess.name = file.name; sess.ext = ext; await importPlainGcode(file); return; }
+sess.name = file.name; sess.ext = ext; sess.rot = IDENT3.slice();
+$('orientWrap').style.display = ext === '3mf' ? 'none' : '';
+$('objUnitWrap').style.display = ext === 'obj' ? '' : 'none';
+$('objUnit').value = '1';
+if (ext === 'obj') {
+sess.raw = parseOBJ(await file.text());
+sess.tris = sess.raw.length / 9;
+applyObjUnit();
 } else {
-setStatus(
-'Loaded: ' + file.name + ' (' + result.volumeCm3.toFixed(1) + ' cm³, ' + result.triangleCount.toLocaleString() + ' tris)',
-'ok'
-);
+const buf = await file.arrayBuffer();
+const result = ext === 'stl' ? parseSTL(buf) : await parse3MF(buf);
+sess.src = result.tris; sess.tris = result.triangleCount; sess.vol3mf = result.volumeCm3;
+resetSliced();
+if (ext === '3mf') await detectSliced(buf, file.name);
 }
-recalculateFromMesh();
-updateCalculations();
+if (ext === 'obj') resetSliced();
+refreshModel();
+await finishSliced();
 } catch (err) {
 console.error(err);
-lastParsedVolumeCm3 = null;
-setStatus(err.message || 'Error reading mesh file.', 'error');
+clearModel();
+setStatus(err instanceof RangeError ? 'This file is too large or complex to load in the browser.' : (err.message || 'Error reading file.'), 'error');
 }
 }
+$('objUnit').addEventListener('change', () => guarded(() => { applyObjUnit(); refreshModel(); }));
+$('edgeMargin').addEventListener('input', () => guarded(refreshModel));
+document.querySelectorAll('[data-rot]').forEach(btn => btn.addEventListener('click', () => guarded(() => {
+const [ax, dir] = btn.dataset.rot.split(',').map(Number);
+sess.rot = tcMul(tcRot90(ax, dir), sess.rot); refreshModel();
+})));
+$('rotReset').addEventListener('click', () => guarded(() => { sess.rot = IDENT3.slice(); refreshModel(); }));
+(function () {
+const cv = $('previewCanvas'); let drag = null;
+cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => { if (!drag) return; cam.yaw -= (e.clientX - drag[0]) * 0.5; cam.pitch = Math.min(88, Math.max(4, cam.pitch + (e.clientY - drag[1]) * 0.4)); drag = [e.clientX, e.clientY]; drawPreview(); });
+cv.addEventListener('pointerup', () => { drag = null; });
+cv.addEventListener('dblclick', () => { cam.yaw = 35; cam.pitch = 32; drawPreview(); });
+$('viewToggle').addEventListener('click', () => { cam.mode = cam.mode === 'model' ? 'plate' : 'model'; $('viewToggle').textContent = cam.mode === 'model' ? 'Show whole plate' : 'Zoom to model'; drawPreview(); });
+window.addEventListener('resize', drawPreview);
+})();
+const sliced = { holdRough: false, info: null, d: null, src: null, note: '', file: '' };
+function resetSliced() { sliced.holdRough = false; sliced.info = null; sliced.d = null; sliced.src = null; sliced.note = ''; }
+function parseDur(str) {
+if (!str) return null;
+let t = 0, found = false;
+for (const m of str.matchAll(/(\d+(?:\.\d+)?)\s*([dhms])/g)) { found = true; t += parseFloat(m[1]) * { d: 86400, h: 3600, m: 60, s: 1 }[m[2]]; }
+return found ? Math.round(t) : null;
+}
+function fmtSec(s) {
+if (!Number.isFinite(s)) return null;
+const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = Math.round(s % 60);
+return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + x + 's';
+}
+// Approximate per-layer print time from G-code moves (distance / feedrate; ignores acceleration).
+function gcodeLayerTiming(text) {
+const lines = text.split(String.fromCharCode(10));
+let i0 = lines.findIndex(l => l.startsWith('; EXECUTABLE_BLOCK_START'));
+if (i0 < 0) i0 = 0;
+let x = 0, y = 0, z = 0, e = 0, f = 1000, relXYZ = false, relE = true, layer = 0;
+const t = [0];
+const val = (l, k) => { const m = l.match(new RegExp('(?:^|\\s)' + k + '(-?\\d*\\.?\\d+)')); return m ? parseFloat(m[1]) : null; };
+for (let i = i0; i < lines.length; i++) {
+const l = lines[i];
+if (l.charCodeAt(0) === 59) { if (l.startsWith('; CHANGE_LAYER')) { layer++; t[layer] = 0; } continue; }
+const g = /^G([0-4])(?!\d)/.exec(l);
+if (g) {
+const n = +g[1];
+if (n === 4) { const p = val(l, 'P'), sv = val(l, 'S'); t[layer] += p !== null ? p / 1000 : (sv || 0); continue; }
+const nf = val(l, 'F'); if (nf !== null) f = nf;
+const X = val(l, 'X'), Y = val(l, 'Y'), Z = val(l, 'Z'), E = val(l, 'E');
+const nx = X === null ? x : (relXYZ ? x + X : X), ny = Y === null ? y : (relXYZ ? y + Y : Y), nz = Z === null ? z : (relXYZ ? z + Z : Z);
+const dE = E === null ? 0 : (relE ? E : E - e);
+let len;
+if (n >= 2) {
+const I = val(l, 'I') || 0, J = val(l, 'J') || 0, r = Math.hypot(I, J), cx = x + I, cy = y + J;
+const a0 = Math.atan2(y - cy, x - cx), a1 = Math.atan2(ny - cy, nx - cx);
+let d = n === 2 ? a0 - a1 : a1 - a0;
+if (d <= 1e-9) d += 2 * Math.PI;
+len = Math.hypot(r * d, nz - z);
+} else {
+len = Math.hypot(nx - x, ny - y, nz - z);
+if (len < 1e-9) len = Math.abs(dE);
+}
+if (len > 0 && f > 0) t[layer] += len / (f / 60);
+x = nx; y = ny; z = nz; if (E !== null) e = relE ? e : E;
+continue;
+}
+if (l.startsWith('G90')) relXYZ = false; else if (l.startsWith('G91')) relXYZ = true;
+else if (l.startsWith('M82')) relE = false; else if (l.startsWith('M83')) relE = true;
+else if (l.startsWith('G92')) { const E = val(l, 'E'); if (E !== null) e = E; }
+}
+let total = 0; for (let k = 1; k < t.length; k++) total += t[k];
+return { layers: layer, first: t[1] === undefined ? null : t[1], naiveTotal: total };
+}
+async function detectSliced(buf, fileName) {
+try {
+const Z = await ensureJSZip(), zip = await Z.loadAsync(buf);
+const si = zip.file('Metadata/slice_info.config');
+if (!si) return;
+const doc = new DOMParser().parseFromString(await si.async('text'), 'application/xml');
+if (doc.querySelector('parsererror')) { sliced.note = 'slice_info.config in this file is malformed, so slicer data was ignored. Showing the geometry estimate (Rough).'; return; }
+const plates = Array.from(doc.getElementsByTagName('plate')).map((el, k) => {
+const meta = {};
+Array.from(el.children).forEach(c => { if (c.tagName === 'metadata') meta[c.getAttribute('key')] = c.getAttribute('value'); });
+const idx = parseInt(meta.index, 10);
+return { el, meta, index: Number.isFinite(idx) ? idx : k + 1 };
+}).filter(p => p.meta.prediction !== undefined || p.meta.weight !== undefined);
+if (!plates.length) return;
+const hv = Array.from(doc.getElementsByTagName('header_item')).find(h => h.getAttribute('key') === 'X-BBL-Client-Version');
+sliced.info = { zip, plates, clientVersion: hv ? hv.getAttribute('value') : null };
+sliced.holdRough = true; sliced.file = fileName;
+} catch (err) {
+console.error(err); sliced.holdRough = false; sliced.info = null;
+sliced.note = 'Could not read slicer data from this file. Showing the geometry estimate (Rough).';
+}
+}
+async function finishSliced() {
+if (sliced.note) setStatus(sliced.note, 'warn');
+if (!sliced.info) return;
+const ps = sliced.info.plates, sel = $('plateSelect');
+sel.textContent = '';
+if (ps.length > 1) {
+const o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'Select a plate…'; sel.appendChild(o0);
+ps.forEach(p => { const o = document.createElement('option'); o.value = String(p.index); const t = fmtSec(parseFloat(p.meta.prediction)); o.textContent = 'Plate ' + p.index + (t ? ' — ' + t : '') + (p.meta.weight ? ', ' + p.meta.weight + ' g' : ''); sel.appendChild(o); });
+sliced.d = null;
+renderSlicerPanel();
+} else {
+await applyPlate(ps[0]);
+}
+}
+async function applyPlate(p) {
+try { sliced.d = await extractPlate(sliced.info, p, sliced.file); } catch (err) { console.error(err); sliced.d = null; sliced.note = 'Could not read plate ' + p.index + '.'; setStatus(sliced.note, 'warn'); return; }
+applyData(sliced.d);
+}
+function applyData(d) {
+if (d.grams !== null) els.filamentGrams.value = String(d.grams);
+if (d.totalSec !== null) els.printHours.value = String(+(d.totalSec / 3600).toFixed(4));
+sliced.src = (d.grams !== null || d.totalSec !== null) ? { kind: 'sliced', grams: d.grams !== null ? els.filamentGrams.value : null, hours: d.totalSec !== null ? els.printHours.value : null, partial: d.grams === null || d.totalSec === null } : null;
+updateCalculations();
+}
+function readGcode(d, gc, slot, standalone) {
+if (standalone) { const f0 = gc.slice(0, 20000).match(/^;\s*filament:\s*(\d+)/m); if (f0) slot = parseInt(f0[1], 10) - 1; }
+const ex = gc.indexOf('; EXECUTABLE_BLOCK_START'), head = ex > 0 ? gc.slice(0, ex) : gc.slice(0, 200000);
+const g1 = (re) => { const r = head.match(re); return r ? r[1] : null; };
+const tm = head.match(/^;\s*model printing time:\s*(.*?);\s*total estimated time:\s*(.*)$/m);
+const headTotal = tm ? parseDur(tm[2]) : null, headModel = tm ? parseDur(tm[1]) : null;
+if (headModel !== null && headTotal !== null && (d.totalSec === null || Math.abs(headTotal - d.totalSec) <= 2)) d.modelSec = headModel;
+const L = g1(/^;\s*total layer number\s*:\s*(\d+)/m); d.layers = L ? parseInt(L, 10) : null;
+const len = g1(/^;\s*total filament length \[mm\]\s*:\s*([\d.]+)/m); d.lengthMm = len ? parseFloat(len) : null;
+const mz = g1(/^;\s*max_z_height\s*:\s*([\d.]+)/m); d.maxZ = mz ? parseFloat(mz) : null;
+const sv = head.match(/HEADER_BLOCK_START\s*\n;\s*([A-Za-z]+)\s+(\d+(?:\.\d+)+)/);
+d.slicerName = sv ? sv[1] : null; if (sv) d.slicerVersion = sv[2];
+const cfg = k => { const r = head.match(new RegExp('^;\\s*' + k + '\\s*=\\s*(.*)$', 'm')); return r ? r[1].trim() : null; };
+const pick = (v, sep) => { if (v === null) return null; const a = v.split(sep).map(x => x.replace(/^"|"$/g, '').trim()); return a[slot] !== undefined && a[slot] !== '' ? a[slot] : null; };
+d.printer = cfg('printer_settings_id'); d.process = cfg('print_settings_id'); d.filProfile = pick(cfg('filament_settings_id'), ';');
+d.layerHeight = cfg('layer_height'); d.firstLayerHeight = cfg('initial_layer_print_height');
+d.nozzleTemp = pick(cfg('nozzle_temperature'), ','); d.nozzleTempL1 = pick(cfg('nozzle_temperature_initial_layer'), ',');
+const bed = cfg('curr_bed_type'), bedKey = { 'Cool Plate': 'cool_plate_temp', 'Engineering Plate': 'eng_plate_temp', 'High Temp Plate': 'hot_plate_temp', 'Textured PEI Plate': 'textured_plate_temp' }[bed];
+d.bedType = bed; d.bedTemp = bedKey ? pick(cfg(bedKey), ',') : null;
+if (d.modelSec === null) d.firstLayer = { sec: null, reason: 'model printing time not available to check the calculation against' };
+else {
+const lt = gcodeLayerTiming(gc), ratio = lt.naiveTotal / d.modelSec;
+if (lt.layers >= 2 && ratio >= 0.6 && ratio <= 1.15) d.firstLayer = { sec: lt.first, ratio };
+else d.firstLayer = { sec: null, reason: 'calculation did not agree with the slicer’s model time (' + (ratio * 100).toFixed(0) + '%)' };
+}
+
+const lst = re => { const r = head.match(re); return r ? r[1].split(',').map(x => parseFloat(x)).filter(Number.isFinite) : null; };
+d.lenList = lst(/^;\s*total filament length \[mm\]\s*:\s*([\d.,\s]+)$/m) || lst(/^;\s*filament used \[mm\]\s*=\s*([\d.,\s]+)$/m);
+d.wList = lst(/^;\s*total filament weight \[g\]\s*:\s*([\d.,\s]+)$/m) || lst(/^;\s*(?:total )?filament used \[g\]\s*=\s*([\d.,\s]+)$/m);
+const listAt = (v, sep) => v === null ? null : v.split(sep).map(x => x.replace(/^"|"$/g, '').trim());
+d.profileList = listAt(cfg('filament_settings_id'), ';'); d.typeList = listAt(cfg('filament_type'), ';');
+if (standalone) {
+d.problems = [];
+const lenList = d.lenList, wList = d.wList;
+const fm = head.match(/^;\s*filament:\s*([\d,;\s]+)$/m);
+const ids = fm ? fm[1].split(/[,;\s]+/).filter(Boolean).map(Number).filter(Number.isFinite) : null;
+if (headTotal !== null) d.totalSec = headTotal;
+else { const am = head.match(/^;\s*estimated printing time \(normal mode\)\s*=\s*(.*)$/m); d.totalSec = am ? parseDur(am[1]) : null; }
+if (!d.layers) { const lc = head.match(/^;\s*total layers count\s*=\s*(\d+)/m); d.layers = lc ? parseInt(lc[1], 10) : null; }
+if (!d.slicerName) { const gm = gc.slice(0, 4000).match(/^;\s*generated by\s+(\S+)\s+(\S+)/mi); if (gm) { d.slicerName = gm[1]; d.slicerVersion = gm[2]; } }
+d.nozzleDia = cfg('nozzle_diameter'); d.flowType = cfg('nozzle_volume_type'); d.filType = pick(cfg('filament_type'), ';');
+const es = cfg('enable_support'); d.supportUsed = es === '1' ? true : (es === '0' ? false : null);
+const nUsed = Math.max(ids ? ids.length : 0, wList ? wList.length : 0, lenList ? lenList.length : 0);
+d.multi = nUsed > 1; d.nUsed = nUsed; d.filaments = null;
+if (d.multi) {
+d.grams = null; d.lengthMm = null;
+if (ids && ids.length === nUsed && (!wList || wList.length === nUsed) && (!lenList || lenList.length === nUsed)) {
+d.filaments = ids.map((id, n) => ({ id, type: d.typeList ? d.typeList[id - 1] || null : null, profile: d.profileList ? d.profileList[id - 1] || null : null, grams: wList ? wList[n] : null, mm: lenList ? lenList[n] : null }));
+}
+} else {
+d.grams = wList && wList.length ? wList[0] : null; d.lengthMm = lenList && lenList.length ? lenList[0] : null;
+}
+if (d.modelSec !== null && d.totalSec !== null && d.modelSec > d.totalSec) { d.problems.push('Model printing time is longer than the total time in the header, so model time was withheld.'); d.modelSec = null; d.firstLayer = { sec: null, reason: 'conflicting time metadata' }; }
+if (!d.multi && d.grams !== null && d.lengthMm !== null) {
+const dia = parseFloat(pick(cfg('filament_diameter'), ',')), den = parseFloat(pick(cfg('filament_density'), ','));
+if (dia > 0 && den > 0) { const calc = Math.PI * Math.pow(dia / 2, 2) * d.lengthMm / 1000 * den; if (Math.abs(calc - d.grams) > Math.max(0.1, 0.1 * d.grams)) { d.problems.push('Weight (' + d.grams + ' g) and length (' + d.lengthMm + ' mm) disagree; the length implies about ' + calc.toFixed(2) + ' g. Weight was not used.'); d.grams = null; } }
+}
+d.markers = (gc.match(/^; CHANGE_LAYER/gm) || []).length;
+d.truncated = ex > 0 && (gc.indexOf('; EXECUTABLE_BLOCK_END') < 0 || (d.layers !== null && d.markers < d.layers));
+}
+}
+async function extractPlate(info, p, fileName) {
+const m = p.meta, d = { index: p.index, fileName };
+const tot = parseFloat(m.prediction), w = parseFloat(m.weight);
+d.totalSec = Number.isFinite(tot) && tot > 0 ? Math.round(tot) : null;
+d.grams = Number.isFinite(w) && w >= 0 ? w : null;
+const fil = Array.from(p.el.getElementsByTagName('filament')).map(f => ({ id: parseInt(f.getAttribute('id'), 10), type: f.getAttribute('type'), usedM: parseFloat(f.getAttribute('used_m')), usedG: parseFloat(f.getAttribute('used_g')), volumeType: f.getAttribute('volume_type') }));
+const noz = p.el.getElementsByTagName('nozzle')[0];
+d.nozzleDia = (noz && noz.getAttribute('nozzle_diameter')) || m.nozzle_diameters || null;
+d.flowType = (noz && noz.getAttribute('volume_type')) || (fil[0] && fil[0].volumeType) || null;
+d.filType = fil.length ? fil.map(f => f.type).filter(Boolean).join(', ') || null : null;
+d.supportUsed = m.support_used === 'true' ? true : (m.support_used === 'false' ? false : null);
+d.objects = Array.from(p.el.getElementsByTagName('object')).map(o => o.getAttribute('name')).filter(Boolean);
+d.slicerVersion = info.clientVersion;
+const slot = fil.length && Number.isFinite(fil[0].id) ? fil[0].id - 1 : 0;
+let gc = null, js = null;
+const ge = info.zip.file('Metadata/plate_' + p.index + '.gcode'), je = info.zip.file('Metadata/plate_' + p.index + '.json');
+if (ge) { try { gc = await ge.async('text'); } catch (e) { gc = null; } }
+if (je) { try { js = JSON.parse(await je.async('text')); } catch (e) { js = null; } }
+d.lengthMm = null; d.layers = null; d.modelSec = null; d.firstLayer = { sec: null, reason: 'G-code not in file' };
+if (gc) readGcode(d, gc, slot, false);
+if (fil.length > 1) {
+d.multi = true; d.nUsed = fil.length; d.grams = null; d.lengthMm = null; d.filType = null; d.filProfile = null;
+const al = a => a && a.length === fil.length;
+d.filaments = fil.map((f, n) => ({ id: f.id, type: f.type, profile: d.profileList ? d.profileList[f.id - 1] || null : null, grams: al(d.wList) ? d.wList[n] : (Number.isFinite(f.usedG) ? f.usedG : null), mm: al(d.lenList) ? d.lenList[n] : (Number.isFinite(f.usedM) ? f.usedM * 1000 : null) }));
+}
+if (d.lengthMm === null && !d.multi) { const um = fil.map(f => f.usedM).filter(Number.isFinite); if (um.length) { d.lengthMm = um.reduce((a, b) => a + b, 0) * 1000; d.lengthFromUsedM = true; } }
+let bb = null;
+const ok4 = a => Array.isArray(a) && a.length === 4 && a.every(Number.isFinite);
+if (js && Array.isArray(js.bbox_objects)) {
+d.wipeTower = js.bbox_objects.some(o => o && o.name === 'wipe_tower');
+const objs = js.bbox_objects.filter(o => o && o.name !== 'wipe_tower' && ok4(o.bbox)).map(o => o.bbox);
+if (objs.length) bb = [Math.min(...objs.map(b => b[0])), Math.min(...objs.map(b => b[1])), Math.max(...objs.map(b => b[2])), Math.max(...objs.map(b => b[3]))];
+}
+if (!bb && js && ok4(js.bbox_all) && !d.wipeTower) bb = js.bbox_all;
+d.toolpath = bb ? { x: bb[2] - bb[0], y: bb[3] - bb[1], z: d.maxZ || null } : null;
+return d;
+}
+async function importPlainGcode(file) {
+const text = await file.text();
+if (!text.trim()) throw new Error('This G-code file is empty.');
+const d = { index: 1, fileName: file.name, totalSec: null, grams: null, objects: [], lengthMm: null, layers: null, modelSec: null, toolpath: null, firstLayer: { sec: null, reason: 'G-code not in file' } };
+readGcode(d, text, 0, true);
+if (d.truncated) { setStatus('This G-code looks incomplete (' + d.markers + ' of ' + (d.layers === null ? '?' : d.layers) + ' layers, or the end marker is missing). No values were changed.', 'error'); return; }
+if (d.totalSec === null && d.grams === null && !d.multi) { setStatus('No slicer statistics were found in this G-code (unsupported slicer or stripped header). No values were changed.', 'error'); return; }
+sliced.info = { kind: 'gcode', plates: [{ index: 1, meta: {} }], clientVersion: null }; sliced.holdRough = true; sliced.file = file.name; sliced.d = d;
+setStatus('Loaded: ' + file.name + ' (G-code, no 3D model)' + (d.problems.length ? '. ' + d.problems.join(' ') : ''), d.problems.length ? 'warn' : 'ok');
+applyData(d);
+}
+function applyMultiOverride() {
+if (sliced.info && sliced.d && sliced.d.multi) { els.filamentCost.textContent = 'Not calculated'; els.totalCost.textContent = '—'; }
+}
+function renderSourceBadge() {
+const b = $('srcBadge'), s = sliced.src;
+if (!s) { b.style.display = 'none'; return; }
+const same = (s.grams === null || els.filamentGrams.value === s.grams) && (s.hours === null || els.printHours.value === s.hours);
+b.style.display = ''; b.className = 'fit-badge' + (same ? (s.kind === 'rough' ? ' close' : '') : ' muted');
+b.textContent = !same ? 'Manual override' : (s.kind === 'rough' ? 'Rough' : 'Slicer-reported' + (s.partial ? ' (partial)' : ''));
+}
+function renderSlicerPanel() {
+renderSourceBadge();
+const blk = $('slicerBlock');
+blk.style.display = sliced.holdRough && sliced.info ? '' : 'none';
+if (!sliced.info) return;
+const multi = sliced.info.plates.length > 1;
+$('plateWrap').style.display = multi ? '' : 'none';
+$('plateMsg').textContent = 'This file has ' + sliced.info.plates.length + ' sliced plates. Choose one; plates are never combined.';
+const d = sliced.d, NA = 'Not in file';
+if (!d) { for (const id of ['slModelTime', 'slTotalTime', 'slFilament', 'slFirstLayer']) $(id).textContent = '—'; $('slDetailsBody').textContent = ''; return; }
+$('slModelTime').textContent = fmtSec(d.modelSec) || NA;
+$('slTotalTime').textContent = fmtSec(d.totalSec) || NA;
+const spoolG = Math.max(1, (parseFloat(els.spoolKg.value) || 1) * 1000), parts = [];
+if (d.grams !== null) parts.push(d.grams.toFixed(2) + ' g');
+if (d.lengthMm !== null) parts.push((d.lengthMm / 1000).toFixed(3) + ' m');
+if (d.grams !== null) parts.push((d.grams / spoolG * 100).toFixed(2) + '% of spool');
+$('slFilament').textContent = d.multi ? 'Multiple filaments (' + d.nUsed + '), not combined' : (parts.length ? parts.join(' · ') : NA);
+$('multiNote').style.display = d.multi ? '' : 'none';
+$('multiNote').textContent = d.multi ? d.nUsed + ' filaments are used. The single-spool price cannot cost several materials, so filament and total cost are not calculated. Individual usage is listed in the slicer details.' : '';
+$('slFirstLayer').textContent = d.firstLayer.sec !== null ? '≈ ' + d.firstLayer.sec.toFixed(1) + ' s (Approximate)' : 'Unavailable';
+$('slFirstLayer').title = d.firstLayer.sec !== null ? 'Calculated from G-code moves (distance ÷ feedrate, ignores acceleration). The slicer’s own first-layer field is empty.' : (d.firstLayer.reason || '');
+const rows = [['File', d.fileName], ['Slicer', d.slicerName ? d.slicerName + ' ' + (d.slicerVersion || '') : (d.slicerVersion ? 'Version ' + d.slicerVersion : null)], ['Printer', d.printer], ['Process preset', d.process],
+['Objects', d.objects.length ? d.objects.join(', ') : null], ['Layer height', d.layerHeight ? d.layerHeight + ' mm' : null], ['First layer height', d.firstLayerHeight ? d.firstLayerHeight + ' mm' : null],
+['Layers', d.layers !== null ? String(d.layers) : null], ['Nozzle', d.nozzleDia ? d.nozzleDia + ' mm' : null], ['Flow type', d.flowType], ['Filament', [d.filType, d.filProfile].filter(Boolean).join(' · ') || null],
+['Nozzle temperature' + (d.multi ? ' (first filament)' : ''), d.nozzleTemp ? d.nozzleTemp + ' °C' + (d.nozzleTempL1 && d.nozzleTempL1 !== d.nozzleTemp ? ' (first layer ' + d.nozzleTempL1 + ' °C)' : '') : null],
+['Bed temperature', d.bedTemp ? d.bedTemp + ' °C' + (d.bedType ? ' (' + d.bedType + ')' : '') : null],
+['Toolpath size', d.toolpath ? d.toolpath.x.toFixed(2) + ' × ' + d.toolpath.y.toFixed(2) + (d.toolpath.z ? ' × ' + d.toolpath.z.toFixed(2) : '') + ' mm' : null],
+['Wipe tower', d.wipeTower ? 'Yes (excluded from toolpath size)' : null], ['Supports used', d.supportUsed === null ? null : (d.supportUsed ? 'Yes' : 'No')], ['Plate', sliced.info.kind === 'gcode' ? null : String(d.index)], ['Notes', d.problems && d.problems.length ? d.problems.join(' ') : null]];
+if (d.filaments) for (const f of d.filaments) rows.push(['Filament ' + f.id, [f.type, f.profile].filter(Boolean).join(' · ') + ' — ' + (f.grams !== null ? f.grams.toFixed(2) + ' g' : 'weight n/a') + ' · ' + (f.mm !== null ? (f.mm / 1000).toFixed(3) + ' m' : 'length n/a')]);
+const body = $('slDetailsBody'); body.textContent = '';
+for (const [k, v] of rows) { if (v === null || v === undefined || v === '') continue; const r = document.createElement('div'); r.className = 'line-item'; const a = document.createElement('span'), b = document.createElement('span'); a.textContent = k; b.textContent = v; r.append(a, b); body.appendChild(r); }
+}
+$('plateSelect').addEventListener('change', async e => { const p = sliced.info && sliced.info.plates.find(q => String(q.index) === e.target.value); if (p) await applyPlate(p); });
 function runSelfTest() {
 const nl = String.fromCharCode(10);
 const asciiCube = Array.of(
